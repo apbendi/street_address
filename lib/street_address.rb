@@ -79,7 +79,8 @@ module StreetAddress
     "corner" => "cor",
     "corners" => "cors",
     "course" => "crse",
-    "court" => "ct",
+    #"court" => "ct",
+    "court" => "f_ct",
     "courts" => "cts",
     "cove" => "cv",
     "coves" => "cvs",
@@ -99,6 +100,8 @@ module StreetAddress
     "crssing" => "xing",
     "crssng" => "xing",
     "crt" => "ct",
+    "crt" => "f_ct",
+    "ct" => "f_ct",
     "curve" => "curv",
     "dale" => "dl",
     "dam" => "dm",
@@ -153,7 +156,7 @@ module StreetAddress
     "grden" => "gdn",
     "grdn" => "gdn",
     "grdns" => "gdns",
-    "green" => "grn",
+    #"green" => "grn",
     "greens" => "grns",
     "grov" => "grv",
     "grove" => "grv",
@@ -485,17 +488,64 @@ module StreetAddress
     'state'   => StateCodes,
   }
 
+  # A quick wrapper around our address info
+  # For the sake of handing back a clean Object vs. an Array
+  class Address
+    attr_accessor :number, :prefix, :street, :type, :suffix, :city, :state, :zip
+
+    def initialize(addy)
+        @number = addy['number']
+        @prefix = addy['prefix']
+        @street = addy['street']
+        @type = addy['type']
+        @suffix = addy['suffix']
+        @city = addy['city']
+        @state = addy['state']
+        @zip = addy['zip']
+    end
+
+    def to_s
+        return "number=>'#{@number}', prefix=>'#{@prefix}', street=>'#{@street}', type=>'#{@type}', " \
+                + "suffix=>'#{@suffix}', city=>'#{@city}', state=>'#{@state}', zip=>'#{@zip}'"
+    end
+  end
+
   def StreetAddress.output
      RegExs["address"].to_s
   end
 
   def StreetAddress.parse(address)
+
+    # Awful hack to solve PO Box w/o fully digging into the underlying
+    pobox_num = address.scan(/P[\.\s]*O[\.\s]*Box\s*(\d+)/i)
+    if pobox_num.length > 0
+        # Sub in a fake street place holder if this is actually a PO Box
+        address = address.gsub(/P[\.\s]*O[\.\s]*Box\s*(\d+)/i, "#{pobox_num} F_A_K_E Street")
+    end
+
+    # The awful hacks continue, this one to solve the problem of numeric highways
+    address =~ /(highway|hwy\.?)\s(\d+)/i
+    hwy_num = $2
+    if hwy_num
+        address = address.gsub(/(highway|hwy\.?)\s\d+/i, "H_W_Y_N_U_M Street")
+    # If Highway didn't work, repeat the same ugly process with Route
+    else
+        address =~ /(route|rte\.?)\s(\d+)/i
+        hwy_num = $2
+
+        if hwy_num
+            address = address.gsub(/(route|rte\.?)\s\d+/i, "R_T_E_N_U_M Street")
+        end
+    end
+    
+
+
     result = RegExs["address"].match(address).to_a
      if result.nil?
        return false
      else
         result.shift
-        return StreetAddress.normalize(result)
+        return StreetAddress.normalize(result, hwy_num)
      end
 
   end
@@ -503,6 +553,7 @@ module StreetAddress
   def StreetAddress.normalize(result)
     
     result.map { |x| x.gsub!(/^\s+|\s+$|[^\w\s\-]/s,'') unless x.nil? }
+    result.map { |x| x.gsub!(/^\s+|\s+$|[^\w\s\-]/,'') unless x.nil? }
     
     address = {
             'number' => result[0].to_s,
@@ -526,7 +577,50 @@ module StreetAddress
 
     address['zip'].gsub!(/-.*$/s,'') if address['zip']
 
-    address
+    # Set a minimum criteria for an address, otherwise return nil
+    if not (address['number'][0] and address['street'][0] and \
+        address['city'][0] and address['state'][0] and address['zip'][0])
+        return nil
+    end
+
+    # Part Two of our awful hack to mak PO Boxes work
+    # If we recognize this as a faked PO Box, reconstruct it correctly
+    if address['street'] == 'F_A_K_E'
+        address['street'] = ''
+        address['type'] = ''
+        address['number'] = "PO Box #{address['number']}"
+    end
+
+    # Safety check for our PO Box Hack, if something's gone wrong
+    # Just return nil rather than an obviously corrupted address
+    if address['street'].match(/F_A_K_E/)
+        return nil
+    end
+
+    # Part two of our highway hack
+    if hwy_num
+        address['street'] = address['street'].gsub(/H_W_Y_N_U_M/, "Highway #{hwy_num}")
+        address['street'] = address['street'].gsub(/R_T_E_N_U_M/, "Route #{hwy_num}")
+        address['type'] = ''
+    end
+
+    # Safety check for the Highway Hack
+    if address['street'].match(/H_W_Y_N_U_M/) or address['street'].match(/R_T_E_N_U_M/)
+        return nil
+    end
+
+    # Yet another awful hack- change f_ct to Ct
+    # This fixes the collision with CT (Connecticut) #1
+    if address['type'] == 'f_ct'
+        address['type'] = 'Ct'
+    end
+
+    # Uppercase the first letter of the street type, i.e. 'rd' becomes 'Rd', etc...
+    if address['type'][0]
+        address['type'][0] = address['type'][0].upcase
+    end
+
+    return Address.new address
   end
 
 end
